@@ -42,8 +42,6 @@ host.
       modules = [
         hm-distro.homeManagerModules.default
         ({ config, pkgs, ... }: {
-          distro.gpu = "nvidia";
-
           home.packages = [ (config.distro.gfx.wrap pkgs.alacritty) ];
 
           distro.privileged.ddcci = {
@@ -125,9 +123,19 @@ home-manager's dry-run mode.
 
 ### `distro.gpu`
 
-`"mesa" | "nvidia"`, default `"mesa"`. The host's display driver stack.
-Declared, not probed: probing `/proc` at evaluation time silently answers
-"no NVIDIA" under pure evaluation.
+`"auto" | "mesa" | "nvidia"`, default `"auto"`. The host's display driver
+stack.
+
+Pure evaluation cannot see the hardware, so `auto` decides at launch instead:
+every wrapped program becomes a small dispatcher that takes the `nvidia` path
+while the proprietary kernel module is loaded (`/proc/driver/nvidia/version`
+exists) and the `mesa` path otherwise. Installing or removing the NVIDIA
+driver needs no rebuild. The cost is closure size: both paths are built, so
+nixGLIntel and its Mesa ship even on NVIDIA machines.
+
+Set it explicitly to drop the unused path, or on hybrid-graphics laptops
+(Intel display, NVIDIA for offload), where the `nvidia` module is loaded but
+`mesa` is the right default: `auto` would pick `nvidia` there.
 
 ### `distro.gfx`
 
@@ -254,13 +262,13 @@ your `pkgs` with 32-bit support on x86_64.
   non-interactive switch without a TTY, sudo's own prompt rules apply.
 - Removing a step does not undo what it installed. Delete the files yourself.
 - The lock records only path *existence* for `stateInputs`, not contents.
-- GPU selection is per configuration: one `distro.gpu` per home configuration,
-  no hybrid-graphics switching.
+- `auto` keys on the NVIDIA kernel module alone; hybrid-graphics machines
+  should set `distro.gpu = "mesa"` and offload explicitly.
 
 ## Development
 
 ```sh
-nix flake check   # builds example configurations for mesa, nvidia and disabled
+nix flake check   # builds example configurations for auto, mesa, nvidia and disabled
 nix fmt
 ```
 

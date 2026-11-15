@@ -64,63 +64,90 @@ let
     libglDriversPath
   ];
 
-  makeGLWrapper =
+  gpuDispatch = import ./gpu-dispatch.nix { inherit pkgs; };
+
+  makeWrapperFrom =
+    name: args:
+    pkgs.runCommand name
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = name;
+      }
+      ''
+        makeWrapper ${lib.escapeShellArgs args}
+      '';
+
+  nvidiaWrapper =
     { vulkan }:
     name: programPath:
-    let
-      args =
-        if cfg.gpu == "nvidia" then
-          [
-            programPath
-            "${placeholder "out"}/bin/${name}"
-            "--set"
-            "__GLX_VENDOR_LIBRARY_NAME"
-            "nvidia"
-            "--suffix"
-            "__EGL_VENDOR_LIBRARY_FILENAMES"
-            ":"
-            "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
-            "--suffix"
-            "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES"
-            ":"
-            eglExternalPlatforms
-            "--suffix"
-            "LD_LIBRARY_PATH"
-            ":"
-            hostDriverLibs
-          ]
-          ++ commonArgs
-          ++ lib.optionals vulkan [
-            "--suffix"
-            "VK_ADD_DRIVER_FILES"
-            ":"
-            nvidiaVulkanIcds
-          ]
-        else
-          [
-            "${nixGL.nixGLIntel}/bin/${nixGL.nixGLIntel.name}"
-            "${placeholder "out"}/bin/${name}"
-          ]
-          ++ commonArgs
-          ++ lib.optionals vulkan [
-            "--add-flag"
-            "${nixGL.nixVulkanIntel}/bin/${nixGL.nixVulkanIntel.name}"
-          ]
-          ++ [
-            "--add-flag"
-            programPath
-          ];
-    in
-    pkgs.runCommand name { nativeBuildInputs = [ pkgs.makeWrapper ]; } ''
-      makeWrapper ${lib.escapeShellArgs args}
-    '';
+    makeWrapperFrom name (
+      [
+        programPath
+        "${placeholder "out"}/bin/${name}"
+        "--set"
+        "__GLX_VENDOR_LIBRARY_NAME"
+        "nvidia"
+        "--suffix"
+        "__EGL_VENDOR_LIBRARY_FILENAMES"
+        ":"
+        "/usr/share/glvnd/egl_vendor.d/10_nvidia.json"
+        "--suffix"
+        "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES"
+        ":"
+        eglExternalPlatforms
+        "--suffix"
+        "LD_LIBRARY_PATH"
+        ":"
+        hostDriverLibs
+      ]
+      ++ commonArgs
+      ++ lib.optionals vulkan [
+        "--suffix"
+        "VK_ADD_DRIVER_FILES"
+        ":"
+        nvidiaVulkanIcds
+      ]
+    );
+
+  mesaWrapper =
+    { vulkan }:
+    name: programPath:
+    makeWrapperFrom name (
+      [
+        "${nixGL.nixGLIntel}/bin/${nixGL.nixGLIntel.name}"
+        "${placeholder "out"}/bin/${name}"
+      ]
+      ++ commonArgs
+      ++ lib.optionals vulkan [
+        "--add-flag"
+        "${nixGL.nixVulkanIntel}/bin/${nixGL.nixVulkanIntel.name}"
+      ]
+      ++ [
+        "--add-flag"
+        programPath
+      ]
+    );
+
+  makeGLWrapper =
+    variant: name: programPath:
+    {
+      nvidia = nvidiaWrapper variant name programPath;
+      mesa = mesaWrapper variant name programPath;
+      auto = gpuDispatch {
+        inherit name;
+        probe = "/proc/driver/nvidia/version";
+        nvidia = "${nvidiaWrapper variant name programPath}/bin/${name}";
+        mesa = "${mesaWrapper variant name programPath}/bin/${name}";
+      };
+    }
+    .${cfg.gpu};
 
   glWrapper = makeGLWrapper { vulkan = false; };
   vulkanWrapper = makeGLWrapper { vulkan = true; };
 
   linkAs =
     name: exe:
-    pkgs.runCommand name { } ''
+    pkgs.runCommand name { meta.mainProgram = name; } ''
       mkdir -p $out/bin
       ln -s ${lib.escapeShellArg exe} $out/bin/${lib.escapeShellArg name}
     '';
@@ -256,14 +283,18 @@ in
   options.distro = {
     gpu = lib.mkOption {
       type = lib.types.enum [
+        "auto"
         "mesa"
         "nvidia"
       ];
-      default = "mesa";
+      default = "auto";
       description = ''
         The host's display driver stack. `nvidia` dispatches through glvnd to
         the vendor libraries the distro driver package installed; `mesa` runs
-        programs under nixGLIntel (Mesa from nixpkgs).
+        programs under nixGLIntel (Mesa from nixpkgs); `auto` builds both and
+        picks one at every launch: `nvidia` while the proprietary kernel
+        module is loaded (/proc/driver/nvidia/version exists), `mesa`
+        otherwise.
       '';
     };
 

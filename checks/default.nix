@@ -18,6 +18,7 @@ let
     };
 
   configs = {
+    auto = example { };
     mesa = example { distro.gpu = "mesa"; };
     nvidia = example { distro.gpu = "nvidia"; };
     disabled = example { distro.enable = false; };
@@ -26,6 +27,24 @@ let
   activation = name: configs.${name}.activationPackage;
   gfxOf = name: configs.${name}.config.distro.gfx;
   stepNames = lib.attrNames configs.mesa.config.distro.privileged;
+
+  gpuDispatch = import ../modules/gpu-dispatch.nix { inherit pkgs; };
+
+  showGlEnv = pkgs.writeShellApplication {
+    name = "show-gl-env";
+    text = ''
+      printf 'glx=%s\negl=%s\n' "''${__GLX_VENDOR_LIBRARY_NAME:-}" "''${__EGL_VENDOR_LIBRARY_FILENAMES:-}"
+    '';
+  };
+
+  dispatchWith =
+    probe:
+    gpuDispatch {
+      name = "show-gl-env";
+      inherit probe;
+      nvidia = lib.getExe ((gfxOf "nvidia").wrap showGlEnv);
+      mesa = lib.getExe ((gfxOf "mesa").wrap showGlEnv);
+    };
 
   disabledPassesThrough =
     let
@@ -49,6 +68,16 @@ let
       }/bin/hello VK_ADD_DRIVER_FILES
       check ${(gfxOf "mesa").wrap pkgs.hello}/bin/hello nixGLIntel
       refute ${(gfxOf "mesa").wrap pkgs.hello}/bin/hello __GLX_VENDOR_LIBRARY_NAME
+      check ${(gfxOf "auto").wrap pkgs.hello}/bin/hello /proc/driver/nvidia/version
+
+      ${dispatchWith (pkgs.writeText "nvidia-version" "")}/bin/show-gl-env > present
+      check present glx=nvidia
+      refute present 50_mesa.json
+
+      ${dispatchWith "/nonexistent/nvidia/version"}/bin/show-gl-env > absent
+      check absent 50_mesa.json
+      refute absent glx=nvidia
+
       check ${(gfxOf "disabled").withDriverLibs pkgs.hello}/bin/hello /run/opengl-driver/lib
       check ${
         (gfxOf "disabled").bundle {
